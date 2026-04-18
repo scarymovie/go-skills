@@ -1,26 +1,31 @@
 ---
 name: pgx-txmanager
 description: |
-  Паттерны работы с PostgreSQL в Go через pgxpool (pgx v5) и txmanager (github.com/scarymovie/txmanager).
+  Паттерны работы с PostgreSQL в Go через pgxpool (pgx v5) и avito-tech/go-transaction-manager.
   Используй этот скилл при любых вопросах про: работу с БД в Go, pgxpool, транзакции, структуры с тегами db,
-  CollectRows, GetQuerier, WithinTransaction, nullable-поля через pgtype, batch-запросы, миграции репозиториев на txmanager.
+  CollectRows, DefaultTrOrDB, Do (транзакция), nullable-поля через pgtype, batch-запросы, миграции репозиториев на txmanager.
   Также триггерится на: "как сделать транзакцию", "как описать структуру для БД", "как использовать пул соединений".
 ---
 
-# pgx + txmanager — паттерны работы с PostgreSQL
+# pgx + go-transaction-manager — паттерны работы с PostgreSQL
 
 ## Стек
 
 - `github.com/jackc/pgx/v5` — драйвер PostgreSQL
 - `github.com/jackc/pgx/v5/pgxpool` — пул соединений
-- `github.com/scarymovie/txmanager` — менеджер транзакций поверх pgxpool
+- `github.com/avito-tech/go-transaction-manager/trm/v2` — ядро менеджера транзакций
+- `github.com/avito-tech/go-transaction-manager/drivers/pgxv5/v2` — адаптер для pgx v5
+
+### Установка
+
+```bash
+go get github.com/avito-tech/go-transaction-manager/trm/v2
+go get github.com/avito-tech/go-transaction-manager/drivers/pgxv5/v2
+```
 
 ---
 
 ## Инициализация пула
-
-Конфиг пула выносится в отдельную структуру — значения берутся снаружи (env, yaml, etc.),
-ничего не захардкожено в самом конструкторе.
 
 ```go
 import (
@@ -30,12 +35,12 @@ import (
 )
 
 type PoolConfig struct {
-    DSN                string
-    MaxConns           int32
-    MinConns           int32
-    MaxConnLifetime    time.Duration
-    MaxConnIdleTime    time.Duration
-    HealthCheckPeriod  time.Duration
+    DSN               string
+    MaxConns          int32
+    MinConns          int32
+    MaxConnLifetime   time.Duration
+    MaxConnIdleTime   time.Duration
+    HealthCheckPeriod time.Duration
 }
 
 func NewPool(ctx context.Context, c PoolConfig) (*pgxpool.Pool, error) {
@@ -54,7 +59,7 @@ func NewPool(ctx context.Context, c PoolConfig) (*pgxpool.Pool, error) {
 }
 ```
 
-Пример разумных значений по умолчанию — можно применять если конфиг не задан явно:
+Разумные значения по умолчанию:
 
 ```go
 func DefaultPoolConfig(dsn string) PoolConfig {
@@ -70,6 +75,19 @@ func DefaultPoolConfig(dsn string) PoolConfig {
 ```
 
 > `MaxConns` по умолчанию в pgxpool — 4, что почти всегда мало для продакшена.
+
+---
+
+## Инициализация менеджера транзакций
+
+```go
+import (
+    "github.com/avito-tech/go-transaction-manager/trm/v2/manager"
+    trmpgxv5 "github.com/avito-tech/go-transaction-manager/drivers/pgxv5/v2"
+)
+
+trManager := manager.Must(trmpgxv5.NewDefaultFactory(pool))
+```
 
 ---
 
@@ -91,7 +109,7 @@ type User struct {
 
 type Order struct {
     ID     int64   `db:"id"`
-    UserID int64   `db:"user_id"` // FK → users.id
+    UserID int64   `db:"user_id"`
     Total  float64 `db:"total"`
 }
 ```
@@ -131,30 +149,31 @@ user, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[User])
 // вернёт pgx.ErrNoRows если записи нет
 ```
 
-Кастомный маппер (когда нужна трансформация):
-
-```go
-users, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (User, error) {
-    var u User
-    err := row.Scan(&u.ID, &u.Name, &u.Email)
-    return u, err
-})
-```
-
 ---
 
-## Репозиторий — GetQuerier вместо прямого pool
+## Репозиторий — DefaultTrOrDB вместо прямого pool
 
-`txmanager.GetQuerier(ctx, pool)` возвращает активную транзакцию из контекста, если она есть,
+`trmpgxv5.DefaultCtxGetter.DefaultTrOrDB(ctx, pool)` возвращает активную транзакцию из контекста, если она есть,
 иначе — сам пул. Благодаря этому репозиторий не знает, работает ли он внутри транзакции.
 
 ```go
+import (
+    "github.com/jackc/pgx/v5"
+    "github.com/jackc/pgx/v5/pgxpool"
+    trmpgxv5 "github.com/avito-tech/go-transaction-manager/drivers/pgxv5/v2"
+)
+
 type UserRepository struct {
-    pool *pgxpool.Pool
+    pool   *pgxpool.Pool
+    getter *trmpgxv5.CtxGetter
+}
+
+func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
+    return &UserRepository{pool: pool, getter: trmpgxv5.DefaultCtxGetter}
 }
 
 func (r *UserRepository) Create(ctx context.Context, name, email string) (int64, error) {
-    q := txmanager.GetQuerier(ctx, r.pool)
+    q := r.getter.DefaultTrOrDB(ctx, r.pool)
 
     var id int64
     err := q.QueryRow(ctx,
@@ -165,7 +184,7 @@ func (r *UserRepository) Create(ctx context.Context, name, email string) (int64,
 }
 
 func (r *UserRepository) GetByID(ctx context.Context, id int64) (User, error) {
-    q := txmanager.GetQuerier(ctx, r.pool)
+    q := r.getter.DefaultTrOrDB(ctx, r.pool)
 
     rows, err := q.Query(ctx,
         `SELECT id, name, email, bio, deleted_at FROM users WHERE id = $1`, id,
@@ -179,22 +198,26 @@ func (r *UserRepository) GetByID(ctx context.Context, id int64) (User, error) {
 
 ---
 
-## Транзакция через WithinTransaction
+## Транзакция через Do
 
 ```go
+import (
+    "github.com/avito-tech/go-transaction-manager/trm/v2/manager"
+    trmpgxv5 "github.com/avito-tech/go-transaction-manager/drivers/pgxv5/v2"
+)
+
 type UserService struct {
-    tm       *txmanager.TxManager
-    userRepo *UserRepository
-    profRepo *ProfileRepository
+    trManager *manager.Manager
+    userRepo  *UserRepository
+    profRepo  *ProfileRepository
 }
 
 func (s *UserService) CreateWithProfile(ctx context.Context, name, email, bio string) error {
-    return s.tm.WithinTransaction(ctx, func(ctx context.Context) error {
+    return s.trManager.Do(ctx, func(ctx context.Context) error {
         userID, err := s.userRepo.Create(ctx, name, email)
         if err != nil {
             return err
         }
-
         return s.profRepo.Create(ctx, userID, bio)
     })
     // при ошибке — автоматический rollback
@@ -202,7 +225,20 @@ func (s *UserService) CreateWithProfile(ctx context.Context, name, email, bio st
 }
 ```
 
-Репозитории через `GetQuerier` автоматически подхватывают транзакцию из контекста —
+Вложенные транзакции (savepoint):
+
+```go
+return s.trManager.Do(ctx, func(ctx context.Context) error {
+    checkErr(r.Save(ctx, u))
+
+    return s.trManager.Do(ctx, func(ctx context.Context) error {
+        u.Username = "new_username"
+        return r.Save(ctx, u)
+    })
+})
+```
+
+Репозитории через `DefaultTrOrDB` автоматически подхватывают транзакцию из контекста —
 никаких дополнительных изменений в них не нужно.
 
 ---
@@ -211,7 +247,7 @@ func (s *UserService) CreateWithProfile(ctx context.Context, name, email, bio st
 
 ```go
 func (r *OrderRepository) BulkInsert(ctx context.Context, orders []Order) error {
-    q := txmanager.GetQuerier(ctx, r.pool)
+    q := r.getter.DefaultTrOrDB(ctx, r.pool)
 
     batch := &pgx.Batch{}
     for _, o := range orders {
@@ -233,15 +269,13 @@ func (r *OrderRepository) BulkInsert(ctx context.Context, orders []Order) error 
 }
 ```
 
-> `SendBatch` доступен и на `pgxpool.Pool`, и на `pgx.Tx` — `GetQuerier` это учитывает.
-
 ---
 
 ## Связи: один ко многим
 
 ```go
 func (r *UserRepository) GetWithOrders(ctx context.Context, userID int64) (UserWithOrders, error) {
-    q := txmanager.GetQuerier(ctx, r.pool)
+    q := r.getter.DefaultTrOrDB(ctx, r.pool)
 
     rows, err := q.Query(ctx,
         `SELECT id, name, email, bio, deleted_at FROM users WHERE id = $1`, userID,
@@ -296,8 +330,9 @@ bio := pgtype.Text{String: "developer", Valid: true}
 |--------|-----------|
 | Список записей | `CollectRows` + `RowToStructByName` |
 | Одна запись | `CollectOneRow` + `RowToStructByName` |
-| INSERT/UPDATE/DELETE | `GetQuerier(ctx, pool).Exec(...)` |
-| Транзакция | `tm.WithinTransaction(ctx, fn)` |
+| INSERT/UPDATE/DELETE | `getter.DefaultTrOrDB(ctx, pool).Exec(...)` |
+| Транзакция | `trManager.Do(ctx, fn)` |
+| Вложенная транзакция | вложенный `trManager.Do(ctx, fn)` |
 | Несколько вставок за раз | `pgx.Batch` + `SendBatch` |
 | Nullable колонка | `pgtype.Text / Timestamp / Numeric / ...` |
 | Вложенные связи | отдельный запрос + ручная сборка |
