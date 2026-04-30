@@ -22,7 +22,7 @@ All HTTP endpoints follow an **RPC-over-HTTP** style. No GET, PUT, PATCH, DELETE
 ## Naming Conventions
 
 ### Operations
-OperationId should be a clear verb+noun: `CreateDialog`, `GetUserList`, `SearchMessages`.
+OperationId should be a clear verb+noun with first letter in lower case: `createDialog`, `getUserList`, `searchMessages`.
 
 ### Request / Response schemas
 Every endpoint has:
