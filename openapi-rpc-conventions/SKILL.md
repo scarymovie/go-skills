@@ -33,7 +33,7 @@ Every endpoint has:
 # Example
 /dialog/create:
   post:
-    operationId: CreateDialog
+    operationId: createDialog
     requestBody:
       content:
         application/json:
