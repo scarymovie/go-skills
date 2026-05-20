@@ -5,6 +5,7 @@ description: |
   Используй этот скилл при любых вопросах про: работу с БД в Go, pgxpool, транзакции, структуры с тегами db,
   CollectRows, DefaultTrOrDB, Do (транзакция), nullable-поля через pgtype, batch-запросы, миграции репозиториев на txmanager.
   Также триггерится на: "как сделать транзакцию", "как описать структуру для БД", "как использовать пул соединений".
+  Trigger when user mentions "database, db, база данных",
 ---
 
 # pgx + go-transaction-manager — паттерны работы с PostgreSQL
