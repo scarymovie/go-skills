@@ -11,7 +11,7 @@ description:
 ```
 project/
 ├── api/                  # OpenAPI/proto specs + generated code
-├── app/                  # All Go source code
+├── app/                  # All Go source code including go.mod go.sum
 ├── docker/               # All Dockerfiles (deploy, codegen, tooling, etc.)
 ├── test/                 # Test files (e.g. http/ for .http client files)
 ├── Makefile
