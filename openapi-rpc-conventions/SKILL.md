@@ -1,6 +1,7 @@
 ---
 name: openapi-rpc-conventions
-description: Use this skill when writing or reviewing OpenAPI specs, designing HTTP endpoints, naming request/response schemas, or structuring API contracts. Triggers on: "openapi", "api spec", "endpoint", "operation", "request schema", "response schema", "openapi conventions", "апи", "эндпоинт".
+description: >
+  Use this skill when writing or reviewing OpenAPI specs, designing HTTP endpoints, naming request/response schemas, or structuring API contracts. Triggers on: "openapi", "api spec", "endpoint", "operation", "request schema", "response schema", "openapi conventions", "апи", "эндпоинт".
 ---
 
 # OpenAPI RPC Conventions
@@ -26,8 +27,8 @@ OperationId should be a clear verb+noun with first letter in lower case: `create
 
 ### Request / Response schemas
 Every endpoint has:
-- `<OperationId>Input` — request body schema
-- `<OperationId>Output` — response body schema
+- `<operationId>Input` — request body schema
+- `<operationId>Output` — response body schema
 
 ```yaml
 # Example
