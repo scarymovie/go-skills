@@ -13,9 +13,10 @@ description: >
 
 1. **Поля — приватные** (`id`, не `ID`)
 2. **Конструктор обязателен** — единственная точка входа, валидация только здесь
-3. **Геттеры от значения** (`func (u User) ID() int`) — работают и с `User` и с `*User`
-4. **Обновление — новый конструктор**, не мутация на месте
-5. **`With*` методы** — допустимы, но не приоритет
+3. **Если в конструкторе есть валидация** — возвращать `(*T, error)`, не `panic`
+4. **Геттеры от значения** (`func (u User) ID() int`) — работают и с `User` и с `*User`
+5. **Обновление — новый конструктор**, не мутация на месте
+6. **`With*` методы** — допустимы, но не приоритет
 
 ---
 
@@ -28,11 +29,11 @@ type User struct {
 }
 
 // Конструктор — единственная точка входа
-func NewUser(id int, name string) *User {
+func NewUser(id int, name string) (*User, error) {
     if id <= 0 {
-        panic("id must be positive") // или возвращай error
+        return nil, fmt.Errorf("id must be positive: %d", id)
     }
-    return &User{id: id, name: name}
+    return &User{id: id, name: name}, nil
 }
 
 // Геттеры от значения — работают с User и *User
@@ -40,7 +41,7 @@ func (u User) ID() int      { return u.id }
 func (u User) Name() string { return u.name }
 
 // "Обновление" — новый объект
-u = NewUser(u.ID(), "новое имя")
+u, err = NewUser(u.ID(), "новое имя")
 ```
 
 ---

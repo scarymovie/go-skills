@@ -298,7 +298,7 @@ generate-server:
 			$(GEN_IMAGE_OAPI):$(GEN_TAG) \
 			-config "$$CONFIG" \
 			-o "$$out_dir/api/$$name.gen.go" \
-			-package bonds \
+			-package $$name \
 			"$$spec"; \
 	done
 ```
