@@ -10,6 +10,12 @@ description:
 
 Responsibilities: load config, init logger, build Application, handle OS signals, orchestrate Run/Shutdown.
 
+**Обязательный импорт** — `automaxprocs` выставляет `GOMAXPROCS` по CPU-лимиту контейнера:
+
+```go
+import _ "go.uber.org/automaxprocs"
+```
+
 ```go
 func main() {
 cfg, err := config.LoadConfig("config.yaml")
