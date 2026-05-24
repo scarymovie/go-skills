@@ -164,7 +164,7 @@ package service
 
 import (
     "context"
-    "github.com/scarylog/scarylog"
+    "github.com/scarymovie/scarylog"
     "log/slog"
 )
 
