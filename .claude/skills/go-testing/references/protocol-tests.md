@@ -56,5 +56,5 @@ require.Len(t, raw, 30)
 | WebRTC: SDP для DTLS-SRTP | 5763 | https://www.rfc-editor.org/rfc/rfc5763.html |
 | WebRTC: DTLS-SRTP key transport | 5764 | https://www.rfc-editor.org/rfc/rfc5764.html |
 
-Диагностика тех же протоколов вживую — в `/telephony:sip-diagnostics`, работа с RTP-потоком —
-в `/telephony:realtime-audio`.
+Диагностика тех же протоколов вживую — в `telephony-sip-diagnostics`, работа с RTP-потоком —
+в `telephony-realtime-audio`.

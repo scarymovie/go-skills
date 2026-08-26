@@ -1,5 +1,5 @@
 ---
-name: sip-diagnostics
+name: telephony-sip-diagnostics
 description: >
   Разбор отказов SIP и медиа: почему Asterisk шлёт BYE сразу после ACK (чаще всего —
   кривой 200 OK, а не рассинхрон SRTP), чеклист валидации 200 OK, чтение SIP-трейса
@@ -15,7 +15,7 @@ when_to_use: >
 # Диагностика SIP и медиа
 
 Сигнальная половина диагностики. Медийная (RTP-мост, потери пакетов, счётчики) —
-в скилле `/telephony:realtime-audio`.
+в скилле `telephony-realtime-audio`.
 
 ## Asterisk шлёт BYE сразу после ACK
 
