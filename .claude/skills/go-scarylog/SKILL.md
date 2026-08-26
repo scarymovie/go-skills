@@ -1,6 +1,17 @@
 ---
 name: go-scarylog
-description: Use this skill when writing or reviewing logs, designing logs, naming logs. Triggers on: "logging", "log", "logger".
+description: >
+  scarylog is this project's structured logger: a thin wrapper over log/slog used
+  INSTEAD OF slog directly. Covers the Error(err, ...) signature, ErrorMsg for stable
+  alerting messages, logger-in-context, the scaryhttp middleware, and the constructor
+  options. Read it before writing any logging code, including code that would otherwise
+  reach for slog, log, fmt.Println or a third-party logger.
+when_to_use: >
+  Writing or reviewing logs, naming log attributes, wiring a request-scoped logger,
+  choosing a log level, or adding logging to a handler or worker. Triggers: "logging",
+  "log", "logger", "slog", "log/slog", "structured logging", "add logging", "log the
+  error", "request id", "correlation id", "middleware logging", "логирование",
+  "логгер", "залогируй", "добавь лог".
 ---
 
 # Scarylog Skill for AI Assistants
