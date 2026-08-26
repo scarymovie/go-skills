@@ -1,6 +1,7 @@
 ---
 name: openapi-rpc-conventions
-description: Use this skill when writing or reviewing OpenAPI specs, designing HTTP endpoints, naming request/response schemas, or structuring API contracts. Triggers on: "openapi", "api spec", "endpoint", "operation", "request schema", "response schema", "openapi conventions", "апи", "эндпоинт".
+description: >
+  Use this skill when writing or reviewing OpenAPI specs, designing HTTP endpoints, naming request/response schemas, or structuring API contracts. Triggers on: "openapi", "api spec", "endpoint", "operation", "request schema", "response schema", "openapi conventions", "апи", "эндпоинт".
 ---
 
 # OpenAPI RPC Conventions
@@ -92,6 +93,62 @@ NwkUser:
 
 ---
 
+## Error handling
+
+All endpoints return errors in a unified format using `NwkError`:
+
+```yaml
+NwkError:
+  type: object
+  required:
+    - code
+    - message
+  properties:
+    code:
+      type: string
+      description: Machine-readable error code
+    message:
+      type: string
+      description: Human-readable error message
+```
+
+Standard HTTP status codes:
+- `400` — validation error, bad input (use `NwkError`)
+- `500` — internal server error (use `NwkError`)
+
+Example endpoint with error responses:
+
+```yaml
+/dialog/create:
+  post:
+    operationId: createDialog
+    requestBody:
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CreateDialogInput'
+    responses:
+      '200':
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDialogOutput'
+      '400':
+        description: Validation error
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NwkError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NwkError'
+```
+
+---
+
 ## Schema naming summary
 
 | Schema type | Convention | Example |
@@ -100,3 +157,4 @@ NwkUser:
 | Response body | `<OperationId>Output` | `CreateDialogOutput` |
 | Reusable param group | `<Entity?>Params` | `PaginationParams`, `UserSearchParams` |
 | Wire DTO | `Nwk<Entity>` | `NwkDialog`, `NwkUser` |
+| Error response | `NwkError` | Always the same for 400/500 |
