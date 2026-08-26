@@ -33,8 +33,8 @@ logger := scarylog.NewLogger()
 
 // Logger with custom options
 logger := scarylog.NewLogger(
-    scarylog.WithLevel(slog.LevelDebug),
-    scarylog.WithDefaultAttrs("service", "my-service"),
+	scarylog.WithLevel(slog.LevelDebug),
+	scarylog.WithDefaultAttrs("service", "my-service"),
 )
 ```
 
@@ -68,8 +68,8 @@ wrapping the error at the call site instead of passing a separate message string
 ```go
 err := someOperation()
 if err != nil {
-    // msg = err.Error(); a "caller" attr is added automatically.
-    logger.Error(fmt.Errorf("operation failed: %w", err), "user_id", 123)
+	// msg = err.Error(); a "caller" attr is added automatically.
+	logger.Error(fmt.Errorf("operation failed: %w", err), "user_id", 123)
 }
 ```
 Passing `nil` is safe (it logs a placeholder, never panics). If the error renders
@@ -159,10 +159,10 @@ fallback still carries the application's attributes; otherwise those records lan
 in a bare INFO/stdout logger, look fine, and quietly go missing from aggregation.
 ```go
 func main() {
-    base := scarylog.NewLogger(
-        scarylog.WithDefaultAttrs("service", "my-service", "version", version),
-    )
-    scarylog.SetDefault(base) // FromContext now falls back to this
+	base := scarylog.NewLogger(
+		scarylog.WithDefaultAttrs("service", "my-service", "version", version),
+	)
+	scarylog.SetDefault(base) // FromContext now falls back to this
 }
 ```
 `SetDefault(nil)` restores the built-in default. It is safe for concurrent use.
@@ -171,8 +171,8 @@ Use `FromContextOK` when the difference matters:
 ```go
 log, ok := scarylog.FromContextOK(ctx)
 if !ok {
-    // no request-scoped logger here — a wiring bug, not just a quiet fallback
-    log = scarylog.Default()
+	// no request-scoped logger here — a wiring bug, not just a quiet fallback
+	log = scarylog.Default()
 }
 ```
 Storing a nil `*Logger` with `ToContext` is safe: `FromContext` treats it as
@@ -198,8 +198,8 @@ echoes the id on the response, and logs the request lifecycle (status, latency),
 including when the handler panics.
 ```go
 import (
-    "github.com/scarymovie/scarylog/v2"
-    "github.com/scarymovie/scarylog/v2/scaryhttp"
+	"github.com/scarymovie/scarylog/v2"
+	"github.com/scarymovie/scarylog/v2/scaryhttp"
 )
 
 base := scarylog.NewLogger()
@@ -209,8 +209,8 @@ srv := scaryhttp.Middleware(base)(mux)
 
 // Inside any handler, pull the request-scoped logger (carries request_id):
 func handler(w http.ResponseWriter, r *http.Request) {
-    log := scarylog.FromContext(r.Context())
-    log.InfoContext(r.Context(), "handling")
+	log := scarylog.FromContext(r.Context())
+	log.InfoContext(r.Context(), "handling")
 }
 ```
 Options: `WithHeader`, `WithAttrKey`, `WithCorrelationID`, `WithCorrelationIDs`,
@@ -225,9 +225,9 @@ repeating the literal.
 `WithCorrelationIDs` takes the `CorrelationID` struct, which is also exported:
 ```go
 type CorrelationID struct {
-    Header   string        // inbound header to read, echoed on the response
-    AttrKey  string        // attribute key in the log record
-    Generate func() string // optional: overrides the shared WithGenerator for this id only
+	Header   string        // inbound header to read, echoed on the response
+	AttrKey  string        // attribute key in the log record
+	Generate func() string // optional: overrides the shared WithGenerator for this id only
 }
 ```
 
@@ -255,7 +255,7 @@ because the middleware no longer sees the traffic.
 with capabilities beyond the four above:
 ```go
 scaryhttp.Middleware(base, scaryhttp.WithSkipWrap(
-    func(r *http.Request) bool { return r.URL.Path == "/ws" },
+	func(r *http.Request) bool { return r.URL.Path == "/ws" },
 ))
 ```
 
@@ -265,7 +265,7 @@ per-hop `request_id`. Add as many as needed; each is read from its header,
 generated when absent, echoed on the response and logged under its attribute key:
 ```go
 srv := scaryhttp.Middleware(base,
-    scaryhttp.WithCorrelationID("X-Trace-ID", "trace_id"),
+	scaryhttp.WithCorrelationID("X-Trace-ID", "trace_id"),
 )(mux)
 // {"msg":"request finished","request_id":"...","trace_id":"trace-from-upstream",...}
 ```
@@ -291,21 +291,21 @@ per task**. The principle:
 ```go
 // App start: shared trace_id + an initial request_id.
 base := scarylog.NewLogger(
-    scarylog.WithDefaultAttrs("trace_id", traceID, "request_id", "req-initial"),
+	scarylog.WithDefaultAttrs("trace_id", traceID, "request_id", "req-initial"),
 )
 
 // Inside the pool, each task overwrites only request_id for its own worker.
 func (p *Pool) Submit(ctx context.Context, reqID string, fn func(context.Context) error) error {
-    logger := base.WithOverwrite("request_id", reqID) // trace_id preserved
-    ctx = scarylog.ToContext(ctx, logger)
-    return p.submit(ctx, fn)
+	logger := base.WithOverwrite("request_id", reqID) // trace_id preserved
+	ctx = scarylog.ToContext(ctx, logger)
+	return p.submit(ctx, fn)
 }
 
 // In the task body, pull the worker-scoped logger from ctx.
 func handle(ctx context.Context) error {
-    log := scarylog.FromContext(ctx)
-    log.Info("processing") // carries shared trace_id + this worker's request_id
-    return nil
+	log := scarylog.FromContext(ctx)
+	log.Info("processing") // carries shared trace_id + this worker's request_id
+	return nil
 }
 ```
 
@@ -321,9 +321,9 @@ separate `workerpool` skill.
 ```go
 buf := &bytes.Buffer{}
 logger := scarylog.NewLogger(
-    scarylog.WithWriter(buf),          // built-in JSON handler, redirected
-    scarylog.WithLevel(slog.LevelDebug),
-    scarylog.WithAttrRemapping(map[string]string{"level": "severity"}),
+	scarylog.WithWriter(buf), // built-in JSON handler, redirected
+	scarylog.WithLevel(slog.LevelDebug),
+	scarylog.WithAttrRemapping(map[string]string{"level": "severity"}),
 )
 ```
 `WithWriter` only changes where the built-in handler writes, so every other
@@ -333,7 +333,7 @@ is to capture the output.
 ### Custom Handler
 ```go
 handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-    Level: slog.LevelDebug,
+	Level: slog.LevelDebug,
 })
 logger := scarylog.NewLogger(scarylog.WithHandler(handler))
 ```
@@ -355,29 +355,29 @@ those, use the built-in handler (with `WithWriter` if you need to redirect it).
 ```go
 level := slog.LevelInfo
 if status >= 500 {
-    level = slog.LevelError
+	level = slog.LevelError
 }
 logger.Log(ctx, level, "request finished", "status", status)
 
 if logger.Enabled(ctx, slog.LevelDebug) {
-    logger.DebugContext(ctx, "dump", "payload", expensiveToBuild())
+	logger.DebugContext(ctx, "dump", "payload", expensiveToBuild())
 }
 ```
 
 ### Attribute Remapping
 ```go
 logger := scarylog.NewLogger(
-    scarylog.WithAttrRemapping(map[string]string{
-        "time": "timestamp",
-        "level": "severity",
-    }),
+	scarylog.WithAttrRemapping(map[string]string{
+		"time":  "timestamp",
+		"level": "severity",
+	}),
 )
 ```
 
 ### Custom Time Format
 ```go
 logger := scarylog.NewLogger(
-    scarylog.WithTimeFormat("2006-01-02 15:04:05"),
+	scarylog.WithTimeFormat("2006-01-02 15:04:05"),
 )
 ```
 
@@ -444,34 +444,34 @@ attribute and covers every level.
 package service
 
 import (
-    "context"
-    "fmt"
-    "github.com/scarymovie/scarylog/v2"
+	"context"
+	"fmt"
+	"github.com/scarymovie/scarylog/v2"
 )
 
 type UserService struct {
-    logger *scarylog.Logger
+	logger *scarylog.Logger
 }
 
 func NewUserService(logger *scarylog.Logger) *UserService {
-    return &UserService{
-        logger: logger.With("component", "user_service"),
-    }
+	return &UserService{
+		logger: logger.With("component", "user_service"),
+	}
 }
 
 func (s *UserService) GetUser(ctx context.Context, id int) (*User, error) {
-    log := scarylog.FromContext(ctx)
-    log.Info("getting user", "user_id", id)
-    
-    user, err := s.fetchUser(id)
-    if err != nil {
-        // Handle the error once: wrap and return, or log and degrade — never both.
-        // Logging here as well would put the same failure in the log at every level.
-        return nil, fmt.Errorf("fetch user %d: %w", id, err)
-    }
-    
-    log.Debug("user fetched", "user_id", id, "email", user.Email)
-    return user, nil
+	log := scarylog.FromContext(ctx)
+	log.Info("getting user", "user_id", id)
+
+	user, err := s.fetchUser(id)
+	if err != nil {
+		// Handle the error once: wrap and return, or log and degrade — never both.
+		// Logging here as well would put the same failure in the log at every level.
+		return nil, fmt.Errorf("fetch user %d: %w", id, err)
+	}
+
+	log.Debug("user fetched", "user_id", id, "email", user.Email)
+	return user, nil
 }
 ```
 
