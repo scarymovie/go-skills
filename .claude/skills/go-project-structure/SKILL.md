@@ -1,104 +1,146 @@
 ---
 name: go-project-structure
-description:
-  Use this skill when creating a new Go project, scaffolding directories, or when the user asks how to organize a Go project. Triggers on: "create go project", "scaffold", "project structure", "new service", "create file", "создай файл", "структура проекта".
+description: >
+  Раскладка каталогов Go-сервиса: код в app/, слои domain/usecase/infrastructure,
+  все Dockerfile в docker/, спеки в api/. Отдельно — два места для интерфейсов
+  репозиториев и критерий выбора между ними. Directory layout for a Go service and
+  where repository interfaces belong.
+when_to_use: >
+  Когда создаёшь новый проект, раскладываешь каталоги, решаешь, куда положить новый
+  файл или пакет, и где объявить интерфейс репозитория. Триггеры: "create go project",
+  "scaffold", "project structure", "new service", "create file", "куда положить",
+  "создай файл", "структура проекта", "где объявить интерфейс", "repository interface".
 ---
 
-# Go Project Structure
+# Структура Go-проекта
 
-## Root Layout
+Go 1.27 (минимум 1.26).
+
+## Корень
 
 ```
 project/
-├── api/                  # OpenAPI/proto specs + generated code
-├── app/                  # All Go source code including go.mod go.sum
-├── docker/               # All Dockerfiles (deploy, codegen, tooling, etc.)
-├── test/                 # Test files (e.g. http/ for .http client files)
+├── api/                  # OpenAPI/proto-спеки, source of truth
+├── app/                  # Весь Go-код, включая go.mod и go.sum
+├── docker/               # Все Dockerfile и compose-файлы (деплой, кодоген, тулинг)
+├── test/                 # Тестовые артефакты (например, http/ с .http-файлами)
 ├── Makefile
 └── .ci.yaml
 ```
 
-**Key conventions:**
-
-- Go code lives in `app/`, not in root
-- `docker/` is for ALL Dockerfiles — not just deployment (codegen containers, base images, etc.)
-- `api/` holds source-of-truth specs; generated code goes alongside specs
+- Go-код лежит в `app/`, а не в корне: корень принадлежит инфраструктуре репозитория,
+  и модуль не должен тянуть её в сборку.
+- `docker/` — для ВСЕХ Dockerfile, не только деплойных.
+- `api/` хранит только спеки; сгенерированный по ним код лежит не здесь, а рядом со
+  своей реализацией — в `app/internal/infrastructure/` (скилл `openapi-codegen`).
 
 ---
 
-## `app/` — Go Source
+## `app/` — исходники
 
 ```
 app/
 ├── cmd/
-│   ├── app/              # Main entrypoint
-│   └── migration/        # Migration runner entrypoint
-├── config/               # Config structs and loading
+│   ├── app/              # Точка входа сервиса
+│   └── migration/        # Точка входа раннера миграций
+├── config/               # Структуры конфига и его загрузка
 ├── internal/
-│   ├── app/              # App wiring (DI, startup)
+│   ├── app/              # Сборка приложения (DI, старт)
 │   ├── domain/
-│   │   ├── api/          # Shared usecase types: filter, pagination, sort, search_result
-│   │   │   └── filter/   # Split into subfolders when entities grow
-│   │   ├── model/        # Pure domain entities, no dependencies
-│   │   └── repository/   # Repository interfaces (implementations in infrastructure)
-│   ├── usecase/          # Business logic. May contain model/ and mapper/ subfolders
+│   │   ├── api/          # Общие входные типы usecase: filter, pagination, sort, search_result
+│   │   │   └── filter/   # Дробится на подпапки, когда типов становится много
+│   │   ├── model/        # Чистые доменные сущности, без внешних зависимостей
+│   │   └── repository/   # Вариант A: интерфейсы, у которых несколько потребителей
+│   ├── usecase/          # Бизнес-логика. Может иметь свои model/ и mapper/
+│   │   └── order/
+│   │       ├── order.go       # Вариант B: интерфейс объявлен здесь же, у потребителя
+│   │       └── mapper/
 │   ├── infrastructure/
 │   │   ├── http/
-│   │   │   └── <name>/   # One folder per server module, named after the api yaml file
-│   │   │       ├── api/      # Generated server interfaces
-│   │   │       ├── handler/  # HTTP handlers implementing the interfaces
-│   │   │       └── mapper/   # Request/response mappers
+│   │   │   └── <name>/   # Папка на серверный модуль, имя = имя yaml-файла в api/
+│   │   │       ├── api/      # Сгенерированные интерфейсы сервера
+│   │   │       ├── handler/  # HTTP-хендлеры, реализующие эти интерфейсы
+│   │   │       └── mapper/   # Мапперы запросов и ответов
 │   │   ├── clients/
-│   │   │   └── <name>/   # External HTTP clients, free internal structure
-│   │   ├── postgres/     # Repository implementations
-│   │   └── db/           # Connection to database
+│   │   │   └── <name>/   # Внешние HTTP-клиенты, внутренняя структура свободная
+│   │   ├── postgres/     # Реализации репозиториев — для обоих вариантов
+│   │   └── db/           # Подключение к базе
 │   ├── version/
 │   └── worker/
-└── migrations/           # SQL migration files
+└── migrations/           # SQL-файлы миграций
 ```
 
-### Key conventions
-
-- `domain/api/` holds shared input types used across usecases (filters, pagination, sorting). Split into subfolders per
-  type when the project grows.
-- `domain/model/` — pure entities, zero external dependencies
-- `domain/repository/` — interfaces only; implementations live in `infrastructure/postgres/`
-- `usecase/` replaces "service" — more accurate name, can have its own dto/ and mapper/
-- `infrastructure/http/<name>/` — for HTTP server modules. Name matches the OpenAPI yaml filename in `api/`
-- `infrastructure/clients/<name>/` — for external HTTP clients. Minimal structure, free to grow as needed
+- `usecase/` вместо «service»: имя точнее, внутри допустимы свои `model/` и `mapper/`.
+- `<name>` в `infrastructure/http/<name>/` совпадает с именем yaml-спеки в `api/` —
+  по имени папки сразу видно, какой контракт она реализует.
 
 ---
 
-## `docker/` — All Dockerfiles
+## Интерфейс репозитория живёт там, где его потребители
+
+Два допустимых размещения, выбор — за автором сервиса.
+
+**Один потребитель → интерфейс объявляет сам usecase-пакет**, тот, который его зовёт;
+общего `domain/repository/` для него не заводим. Контракт остаётся ровно таким узким,
+как нужно вызывающему, и ни один пакет не накапливает знание обо всех хранилищах
+сервиса. Это «accept interfaces, return structs» в применении к слоям.
+
+```go
+// internal/usecase/order/order.go
+package order
+
+// Ровно те методы, которые зовёт этот usecase, и ни одного лишнего.
+type orderRepo interface {
+	ByID(ctx context.Context, id model.OrderID) (*model.Order, error)
+	Save(ctx context.Context, o *model.Order) error
+}
+
+type UseCase struct {
+	repo orderRepo
+}
+
+// Интерфейс неэкспортируемый, поэтому единственный способ подставить реализацию —
+// конструктор: в internal/app сюда передаётся *postgres.OrderRepo.
+func New(repo orderRepo) *UseCase {
+	return &UseCase{repo: repo}
+}
+```
+
+**Несколько потребителей → общий `domain/repository/`.** Один и тот же контракт,
+размноженный по пакетам, расходится при первой же правке; в общем пакете он один.
+
+Реализация в обоих случаях — `infrastructure/postgres/`, и она не импортирует пакет
+с интерфейсом: соответствие проверяется там, где конкретный тип подставляется в
+usecase, то есть в `internal/app`.
+
+Переход дешёвый и односторонний: как только у интерфейса появляется второй
+потребитель, он переезжает в `domain/repository/`, реализация не меняется.
+
+---
+
+## `docker/` — все Dockerfile и compose-файлы
 
 ```
 docker/
-└── images/
-    ├── app/              # Production app image (often Alpine-based)
-    ├── codegen/          # Code generation container
-    │   ├── Dockerfile
-    │   └── oapi-config/  # oapi-codegen configs live here, next to the Dockerfile
-    └── <other>/          # redis, nextjs, etc. — one subfolder per image
+├── images/
+│   ├── app/              # Production-образ сервиса
+│   ├── codegen/          # Контейнер кодогенерации
+│   │   ├── Dockerfile
+│   │   └── oapi-config/  # Конфиги oapi-codegen — рядом со своим Dockerfile
+│   └── <other>/          # redis, nextjs и прочее — по подпапке на образ
+├── compose.production.yaml
+└── compose.development.yaml
 ```
 
-**Convention:** one subfolder per image under `docker/images/`. Config files for a Dockerfile (e.g. codegen configs)
-live in the same subfolder.
+Подпапка на образ; конфиги, которые нужны только этому Dockerfile, лежат в ней же —
+чтобы образ переносился одним каталогом.
 
 ---
 
-## `api/` — Specs
+## `api/` — спеки
 
 ```
-api/                      # May contains subfolders for pb/openapi files
-├── <name>.yaml           # OpenAPI spec. Name matches infrastructure/http/<name>/
-└── <name>.pb             # protobaff spec. Name matches infrastructure/grpc/<name>/
-```
-
----
-
-## `test/` — Tests
-
-```
-test/
-└── http/                 # .http files for API testing (JetBrains HTTP Client, Bruno, etc.)
+api/                      # Может содержать подпапки под pb/openapi
+├── <name>.yaml           # OpenAPI-спека. Имя совпадает с infrastructure/http/<name>/
+└── <name>.proto          # gRPC-спека. Имя совпадает с infrastructure/grpc/<name>/
 ```
