@@ -27,6 +27,18 @@ logger := scarylog.NewLogger(
 )
 ```
 
+The full set of options is `WithLevel`, `WithHandler`, `WithWriter`, `WithDefaultAttrs`,
+`WithGroup`, `WithAttrRemapping`, `WithTimeFormat` and `WithSource`. They all write into
+the exported `Options` struct, so a wrapper can build one directly and inspect it.
+
+`WithGroup(name)` is the constructor-time counterpart of the `Group` method below: every
+attribute the logger emits lands under that group, without calling `Group()` at each call
+site.
+```go
+logger := scarylog.NewLogger(scarylog.WithGroup("req"))
+logger.Info("handled", "path", "/x") // {"req":{"path":"/x"},...}
+```
+
 ### Logging Methods
 
 #### Info - Informational messages
@@ -103,7 +115,7 @@ groupLogger.Info("request received", "method", "GET", "path", "/api/users")
 ### Reading Attributes
 Inspect the logger's default attributes or resolve a remapped key name:
 ```go
-traceID, ok := logger.GetString("traceId") // typed string lookup
+traceID, ok := logger.GetString("trace_id") // typed string lookup
 val, ok := logger.GetAttr("count")          // any-typed lookup
 key := logger.GetAttrName("level")          // "severity" if remapped, else "level"
 ```
@@ -194,6 +206,28 @@ Options: `WithHeader`, `WithAttrKey`, `WithCorrelationID`, `WithCorrelationIDs`,
 `WithGenerator`, `WithLogStart`, `WithLevels`, `WithSkip` (e.g. skip health
 checks), `WithSkipWrap`.
 
+Without options the middleware reads and echoes `DefaultRequestIDHeader`
+(`"X-Request-ID"`) and logs the value under `DefaultRequestIDAttrKey` (`"request_id"`).
+Both are exported, so alerting rules and tests can refer to the constant instead of
+repeating the literal.
+
+`WithCorrelationIDs` takes the `CorrelationID` struct, which is also exported:
+```go
+type CorrelationID struct {
+    Header   string        // inbound header to read, echoed on the response
+    AttrKey  string        // attribute key in the log record
+    Generate func() string // optional: overrides the shared WithGenerator for this id only
+}
+```
+
+### What the middleware emits
+`WithLogStart` turns on a `"request started"` line carrying `method` and `path`. The
+closing line is always emitted and is called `"request finished"`; it adds `status`,
+`bytes` and `latency_ms`. It is written from a `defer`, so it survives a panicking
+handler — in that case the level is forced to ERROR and the record carries
+`"panicked", true`. The middleware does **not** recover the panic; it only records it
+before it continues unwinding.
+
 ### WebSockets and streaming
 The writer handed to the handler implements **exactly** the optional interfaces
 of the original — `http.Flusher`, `http.Hijacker`, `io.ReaderFrom`,
@@ -230,28 +264,28 @@ srv := scaryhttp.Middleware(base,
 The middleware is plain `func(http.Handler) http.Handler`, so it composes with
 any framework that can adapt one — e.g. `echo.WrapMiddleware(scaryhttp.Middleware(base))`.
 
-## Worker Pool Pattern: per-worker requestId via WithOverwrite
+## Worker Pool Pattern: per-worker request_id via WithOverwrite
 
-When a worker pool processes a stream of requests, you typically have a `traceId`
-that is **shared for the whole run** and a `requestId` that **differs per worker /
+When a worker pool processes a stream of requests, you typically have a `trace_id`
+that is **shared for the whole run** and a `request_id` that **differs per worker /
 per task**. The principle:
 
-1. At app start, build one base logger carrying the shared `traceId` and an initial
-   `requestId` as default attrs.
-2. Each worker derives its own logger with `WithOverwrite("requestId", ...)`. This
-   overwrites **only** `requestId` — `traceId` (and the custom handler) are kept.
+1. At app start, build one base logger carrying the shared `trace_id` and an initial
+   `request_id` as default attrs.
+2. Each worker derives its own logger with `WithOverwrite("request_id", ...)`. This
+   overwrites **only** `request_id` — `trace_id` (and the custom handler) are kept.
 3. Pass that per-worker logger through the per-task `context.Context` (the same ctx
    a pool already threads into each task), then read it back with `FromContext`.
 
 ```go
-// App start: shared traceId + an initial requestId.
+// App start: shared trace_id + an initial request_id.
 base := scarylog.NewLogger(
-    scarylog.WithDefaultAttrs("traceId", traceID, "requestId", "req-initial"),
+    scarylog.WithDefaultAttrs("trace_id", traceID, "request_id", "req-initial"),
 )
 
-// Inside the pool, each task overwrites only requestId for its own worker.
+// Inside the pool, each task overwrites only request_id for its own worker.
 func (p *Pool) Submit(ctx context.Context, reqID string, fn func(context.Context) error) error {
-    logger := base.WithOverwrite("requestId", reqID) // traceId preserved
+    logger := base.WithOverwrite("request_id", reqID) // trace_id preserved
     ctx = scarylog.ToContext(ctx, logger)
     return p.submit(ctx, fn)
 }
@@ -259,14 +293,14 @@ func (p *Pool) Submit(ctx context.Context, reqID string, fn func(context.Context
 // In the task body, pull the worker-scoped logger from ctx.
 func handle(ctx context.Context) error {
     log := scarylog.FromContext(ctx)
-    log.Info("processing") // carries shared traceId + this worker's requestId
+    log.Info("processing") // carries shared trace_id + this worker's request_id
     return nil
 }
 ```
 
 `WithOverwrite` is safe to call concurrently from many workers: it only reads the
-base logger's options and returns a fresh logger, so the shared `traceId` stays
-intact while each worker gets a distinct `requestId`. For how to build the pool
+base logger's options and returns a fresh logger, so the shared `trace_id` stays
+intact while each worker gets a distinct `request_id`. For how to build the pool
 itself (channels, graceful shutdown, panic recovery, per-task context), see the
 separate `workerpool` skill.
 
@@ -364,7 +398,7 @@ attribute and covers every level.
 2. **Include context**: Use `With()` to add contextual information for related operations
    ```go
    func handleRequest(logger *scarylog.Logger, req *Request) {
-       ctxLogger := logger.With("request_id", req.ID)
+       ctxLogger := logger.With("request_id", req.ID)  // one casing everywhere: snake_case
        ctxLogger.Info("request started")
        // ... process request
    }
@@ -378,16 +412,14 @@ attribute and covers every level.
    }
    ```
 
-4. **Context propagation**: Store logger in context for request-scoped logging
+4. **Context propagation**: don't hand-roll the request-scoped logger — `scaryhttp`
+   already reads or generates the id, attaches the logger and echoes the header:
    ```go
-   func middleware(next http.Handler) http.Handler {
-       return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-           logger := scarylog.NewLogger().With("request_id", generateID())
-           ctx := scarylog.ToContext(r.Context(), logger)
-           next.ServeHTTP(w, r.WithContext(ctx))
-       })
-   }
+   srv := scaryhttp.Middleware(base)(mux)
    ```
+   Building a logger inside your own middleware with `scarylog.NewLogger()` drops the
+   application's default attributes and the configured handler, so those records look
+   fine locally and go missing from aggregation. Derive from the base logger instead.
 
 5. **Appropriate log levels**:
    - `Debug`: Detailed information for debugging
@@ -422,8 +454,9 @@ func (s *UserService) GetUser(ctx context.Context, id int) (*User, error) {
     
     user, err := s.fetchUser(id)
     if err != nil {
-        log.Error(fmt.Errorf("failed to fetch user: %w", err), "user_id", id)
-        return nil, err
+        // Handle the error once: wrap and return, or log and degrade — never both.
+        // Logging here as well would put the same failure in the log at every level.
+        return nil, fmt.Errorf("fetch user %d: %w", id, err)
     }
     
     log.Debug("user fetched", "user_id", id, "email", user.Email)
