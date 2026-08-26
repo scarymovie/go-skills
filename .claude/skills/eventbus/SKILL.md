@@ -4,19 +4,30 @@ description: >-
   Паттерн реализации in-process event bus на Go по actor-модели: типизированный
   publish/subscribe с тотальным порядком событий, единый pump-goroutine, тонкий
   Foo[T]-фасад над non-generic ядром (без per-T раздувания), backpressure через
-  ограниченную очередь, переиспользуемые примитивы (worker, stopFlag, queue[T],
-  Monitor), инспекция состояния без локов, тестовый харнесс. Применять, когда в
-  проекте нужно написать свою шину событий / pub-sub поверх каналов. Триггеры:
-  "event bus", "шина событий", "pub/sub", "publish/subscribe", "actor model",
-  "in-process events", "событийная шина".
+  ограниченную очередь, инспекция состояния без локов, тестовый харнесс.
+  Применять, когда в проекте нужно написать свою шину событий / pub-sub поверх
+  каналов. Implementing an in-process event bus in Go: actor model, typed
+  publish/subscribe, single router goroutine, bounded queue backpressure.
+when_to_use: >
+  Когда проектируешь, пишешь или чинишь собственную шину событий поверх каналов:
+  выбираешь между своей шиной и готовой библиотекой, разбираешь дедлок или гонку
+  в роутинге, добавляешь интроспекцию или тесты шины. Триггеры: "event bus",
+  "шина событий", "pub/sub", "publish/subscribe", "actor model", "in-process
+  events", "событийная шина", "медленный подписчик", "backpressure".
 ---
 
 # Паттерн: как писать in-process event bus на Go
+
+Go 1.27 (минимум 1.26).
 
 Навык — про **реализацию** шины событий (а не вызов готовой библиотеки).
 Описывает структуру, инварианты и решения, делающие шину корректной под `-race`
 и дешёвой по дженерикам. За основу взята архитектура `tailscale.com/util/eventbus`.
 Адаптируй имена и набор фич под проект — **бери ровно то, что нужно, не тащи всё.**
+
+Границы: здесь — **транспорт**. Контракт самого события (что публикуется, кто и
+когда переводит состояние перед публикацией) — скилл `go-events`. Общие конвенции
+тестов, детерминизм и прогон под `-race` — скилл `go-testing`.
 
 ## 0. Сначала реши — нужна ли своя шина
 
@@ -38,8 +49,10 @@ publish/subscribe по `reflect.Type`, и встроенную интроспе�
 ## 1. Actor-модель и гарантии порядка
 
 Фундамент: **один true timeline** всех событий, и **один goroutine-роутер**
-(`pump`), который владеет таблицей маршрутизации и сериализует доставку. Никаких
-локов на горячем пути роутинга — состояние принадлежит одной горутине.
+(`pump`), который владеет очередью и сериализует доставку. Никаких локов на горячем
+пути доставки — это состояние принадлежит одной горутине. Единственное, что реально
+разделяется с чужими горутинами, — таблица маршрутизации (подписка приходит извне),
+и её синхронизацию надо сделать честно: §5.
 
 Гарантии, которые даёшь подписчику:
 - события публикуются в тотальном порядке (две публикации не происходят «в один
@@ -71,25 +84,25 @@ non-generic ядре, в коллекции шины кладётся **инте
 ```go
 // Публичный фасад: несёт T только в сигнатуре, состояния не дублирует.
 type Publisher[T any] struct {
-    core *publisherCore // вся реальная работа здесь
+	core *publisherCore // вся реальная работа здесь
 }
 
 // Non-generic ядро: реализует package-private интерфейс publisher.
 type publisherCore struct {
-    client *Client
-    stop   stopFlag
-    typ    reflect.Type // кэш reflect.TypeFor[T]() — один раз при создании
+	client *Client
+	stop   stopFlag
+	typ    reflect.Type // кэш reflect.TypeFor[T]() — один раз при создании
 }
 
 type publisher interface { // в наборах клиента/шины храним ЭТО, не Publisher[T]
-    publishType() reflect.Type
-    Close()
+	publishType() reflect.Type
+	Close()
 }
 
 func Publish[T any](c *Client) *Publisher[T] {
-    p := &Publisher[T]{core: &publisherCore{client: c, typ: reflect.TypeFor[T]()}}
-    c.addPublisher(p.core) // регистрируем ядро, не фасад
-    return p
+	p := &Publisher[T]{core: &publisherCore{client: c, typ: reflect.TypeFor[T]()}}
+	c.addPublisher(p.core) // регистрируем ядро, не фасад
+	return p
 }
 
 // Единственная per-T работа в Publish — боксинг v в any. Весь канальный
@@ -97,15 +110,15 @@ func Publish[T any](c *Client) *Publisher[T] {
 func (p *Publisher[T]) Publish(v T) { publish(p.core, v) }
 
 func publish(c *publisherCore, v any) {
-    select { // closed publisher → no-op
-    case <-c.stop.Done():
-        return
-    default:
-    }
-    select {
-    case c.client.bus.write <- PublishedEvent{Event: v, From: c.client}:
-    case <-c.stop.Done():
-    }
+	select { // closed publisher → no-op
+	case <-c.stop.Done():
+		return
+	default:
+	}
+	select {
+	case c.client.bus.write <- PublishedEvent{Event: v, From: c.client}:
+	case <-c.stop.Done():
+	}
 }
 ```
 
@@ -116,29 +129,30 @@ func publish(c *publisherCore, v any) {
 
 **Когда generic оставить осознанно.** Типизированная отправка `case s.read <- t:`
 обязана лексически стоять внутри `select` — её нельзя вынести в non-generic
-функцию без бриджа через отдельную горутину на каждое событие. В tailscale
-замерили: такой бридж дал **~2.7x просадку throughput**. Вывод: оставляешь
+функцию без бриджа через отдельную горутину на каждое событие. В tailscale от
+такого бриджа отказались, замерив кратную просадку throughput. Вывод: оставляешь
 per-shape стенсел только вокруг типизированного `select`, а всё окружение
 (таймер, имя типа, логгер) тянешь из non-generic ядра.
 
 ```go
 // Per-T остаётся ТОЛЬКО из-за case s.read <- t. Остальные cases совпадают
 // с non-generic pump — держи их в синхроне.
-func (s *Subscriber[T]) dispatchTyped(...) bool {
-    t := vals.Peek().Event.(T) // распаковка any → T
-    for {
-        select {
-        case s.read <- t:
-            vals.Drop(); return true
-        case val := <-acceptCh():   // продолжаем принимать, пока подписчик занят
-            vals.Add(val)
-        case <-ctx.Done():
-            return false
-        case <-s.core.slow.C:       // окружение — из non-generic core
-            s.core.logf("subscriber for %s is slow", s.core.typeName)
-            s.core.slow.Reset(slowTimeout)
-        }
-    }
+func (s *Subscriber[T]) dispatchTyped(ctx context.Context, vals *queue[DeliveredEvent], acceptCh func() chan DeliveredEvent) bool {
+	t := vals.Peek().Event.(T) // распаковка any → T
+	for {
+		select {
+		case s.read <- t:
+			vals.Drop()
+			return true
+		case val := <-acceptCh(): // продолжаем принимать, пока подписчик занят
+			vals.Add(val)
+		case <-ctx.Done():
+			return false
+		case <-s.core.slow.C: // окружение — из non-generic core
+			s.core.log.Warn("event subscriber is slow", "type", s.core.typeName)
+			s.core.slow.Reset(slowTimeout)
+		}
+	}
 }
 ```
 
@@ -148,110 +162,17 @@ func (s *Subscriber[T]) dispatchTyped(...) bool {
 
 ## 3. Переиспользуемые concurrency-примитивы
 
-Эти четыре кусочка самодостаточны — таскай их в любой конкурентный код.
+Четыре самодостаточных кусочка, на которых стоит всё остальное. Код, инварианты и
+грабли — в `references/primitives.md`; читай его, когда пишешь их вживую.
 
-### `worker` — обёртка жизненного цикла горутины
-
-```go
-type worker struct {
-    ctx     context.Context
-    stop    context.CancelFunc
-    stopped chan struct{}
-}
-
-func runWorker(fn func(context.Context)) *worker {
-    ctx, stop := context.WithCancel(context.Background())
-    w := &worker{ctx: ctx, stop: stop, stopped: make(chan struct{})}
-    go func() { defer close(w.stopped); fn(w.ctx) }()
-    return w
-}
-
-func (w *worker) Stop()        { w.stop() }
-func (w *worker) Done() <-chan struct{} { return w.stopped }
-func (w *worker) StopAndWait() { w.stop(); <-w.stopped }
-```
-
-### `stopFlag` — одноразовый идемпотентный сигнал остановки
-
-Легче `context.Context`, когда нужен только «однократно щёлкнуть выключатель».
-Ленивое создание канала, `Stop` можно звать многократно.
-
-```go
-type stopFlag struct {
-    mu             sync.Mutex
-    stopped        chan struct{}
-    alreadyStopped bool
-}
-
-func (s *stopFlag) Stop() {
-    s.mu.Lock(); defer s.mu.Unlock()
-    if s.alreadyStopped { return }
-    s.alreadyStopped = true
-    if s.stopped == nil { s.stopped = make(chan struct{}) }
-    close(s.stopped)
-}
-
-func (s *stopFlag) Done() <-chan struct{} {
-    s.mu.Lock(); defer s.mu.Unlock()
-    if s.stopped == nil { s.stopped = make(chan struct{}) }
-    return s.stopped
-}
-```
-
-### `queue[T]` — generic ring-buffer
-
-Очередь под select-петлю: `Peek` (посмотреть голову, не снимая), `Drop` (снять
-голову), `Add`, `Snapshot`. Bounded (для backpressure) или unbounded
-(`capacity == 0`). Компактизация сдвигом, без аллокаций на стабильном размере.
-
-```go
-type queue[T any] struct {
-    vals     []T
-    start    int
-    capacity int // 0 = безлимит
-}
-
-func (q *queue[T]) Empty() bool { return q.start == len(q.vals) }
-func (q *queue[T]) Full() bool  { return q.start == 0 && !q.canAppend() }
-func (q *queue[T]) Peek() T     { if q.Empty() { var z T; return z }; return q.vals[q.start] }
-
-func (q *queue[T]) Add(v T) {
-    if !q.canAppend() {
-        if q.start == 0 { panic("Add on a full queue") }
-        n := copy(q.vals, q.vals[q.start:]) // сдвигаем хвост в начало
-        clear(q.vals[n:]); q.vals = q.vals[:n]; q.start = 0
-    }
-    q.vals = append(q.vals, v)
-}
-
-func (q *queue[T]) Drop() {
-    if q.Empty() { return }
-    var z T; q.vals[q.start] = z // обнуляем — не держим ссылку (GC)
-    q.start++
-    if q.Empty() { q.start = 0; q.vals = q.vals[:0] }
-}
-```
-
-> Всегда обнуляй снятый слот (`var z T; q.vals[i] = z`) — иначе очередь держит
-> ссылку на выданное значение и мешает GC.
-
-### `Monitor` — zero-value-valid ожидание горутины
-
-```go
-type Monitor struct {
-    cli  *Client
-    done <-chan struct{}
-}
-
-func (c *Client) Monitor(f func(*Client)) Monitor {
-    done := make(chan struct{})
-    go func() { defer close(done); f(c) }()
-    return Monitor{cli: c, done: done}
-}
-
-// Zero value валиден: Close/Wait возвращаются сразу, Done() — закрытый канал.
-func (m Monitor) Wait() { if m.done != nil { <-m.done } }
-```
+- `worker` — обёртка жизненного цикла горутины: `ctx` + `cancel` + канал `stopped`,
+  наружу `StopAndWait()`; без ожидания `stopped` тест на утечку горутин флачит.
+- `stopFlag` — одноразовый идемпотентный сигнал остановки, легче `context.Context`
+  там, где нужен только «однократно щёлкнуть выключатель»; канал создаётся лениво.
+- `queue[T]` — generic ring-buffer под select-петлю: `Peek` (голова без снятия),
+  `Drop`, `Add`, `Snapshot`; bounded для backpressure или безлимитная.
+- `Monitor` — ожидание горутины с валидным нулевым значением: `Wait()` на нуле
+  возвращается сразу, поэтому вызывающий не проверяет его на пустоту.
 
 ## 4. Select-петля доставки с backpressure
 
@@ -263,8 +184,10 @@ func (m Monitor) Wait() { if m.done != nil { <-m.done } }
 
 ```go
 acceptCh := func() chan PublishedEvent {
-    if vals.Full() { return nil } // очередь полна → перестаём принимать новое
-    return b.write
+	if vals.Full() { // очередь полна → перестаём принимать новое
+		return nil
+	}
+	return b.write
 }
 ```
 
@@ -274,23 +197,30 @@ snapshot-запросы — не простаиваем:
 
 ```go
 for _, d := range dests {
-    evt := DeliveredEvent{Event: val.Event, From: val.From, To: d.client}
-    for {
-        select {
-        case d.write <- evt:
-            break // доставили — к следующему получателю
-        case <-d.closed():
-            break // подписчик закрыт — не блокируемся, идём дальше
-        case in := <-acceptCh():
-            vals.Add(in) // пользуемся паузой, принимаем входящее
-        case <-ctx.Done():
-            return
-        case ch := <-b.snapshot:
-            ch <- vals.Snapshot() // инспекция (см. §5)
-        }
-    }
+	evt := DeliveredEvent{Event: val.Event, From: val.From, To: d.client}
+deliver:
+	for {
+		select {
+		case d.write <- evt:
+			break deliver // доставили — к следующему получателю
+		case <-d.closed():
+			break deliver // подписчик закрыт — не блокируемся, идём дальше
+		case in := <-acceptCh():
+			vals.Add(in) // пользуемся паузой, принимаем входящее
+		case <-ctx.Done():
+			return
+		case ch := <-b.snapshot:
+			ch <- vals.Snapshot() // инспекция (см. §5)
+		}
+	}
 }
 ```
+
+**Метка `deliver` обязательна.** Голый `break` внутри `case` выходит из `select`, а
+не из `for`: доставив событие, петля тут же уходит на новую итерацию и шлёт то же
+событие тому же подписчику снова — бесконечный цикл, до следующего получателя дело
+не доходит. Это классическая ошибка; в любом `for { select { ... } }` выход — только
+помеченный `break` (или `return`/`goto`).
 
 **Ограниченная входная очередь ловит баги.** Делай publish-очередь bounded
 (например 16). Если она заполнилась — значит downstream-подписчик завис и создаёт
@@ -301,47 +231,76 @@ backpressure: это **баг медленного подписчика**, и о
 > только сама доставка). Расхождение = подвисший snapshot или пропущенный
 > `ctx.Done()`. Пометь это комментарием в обоих `select`.
 
-## 5. Инспекция состояния без локов
+## 5. Инспекция без локов и честная синхронизация таблицы
 
-Состояние принадлежит горутине — снаружи лочить нельзя. Решения:
+Состояние `pump` принадлежит его горутине — снаружи лочить нельзя. Решения:
 
 **Snapshot через `chan chan []T`** — запрос/ответ к владельцу. Внешний код шлёт
 канал-ответ; `pump` в своём `select` отвечает в него своим срезом:
 
 ```go
 func (b *Bus) snapshotPublishQueue() []PublishedEvent {
-    resp := make(chan []PublishedEvent)
-    select {
-    case b.snapshot <- resp:   // отдаём запрос в pump
-        return <-resp          // pump кладёт ответ
-    case <-b.router.Done():    // шина закрыта
-        return nil
-    }
+	resp := make(chan []PublishedEvent)
+	select {
+	case b.snapshot <- resp: // отдаём запрос в pump
+		return <-resp // pump кладёт ответ
+	case <-b.router.Done(): // шина закрыта
+		return nil
+	}
 }
 ```
 
 **Таймер медленного подписчика.** Засекай доставку; если подписчик не принял за
-N секунд — логируй (а в CI можно дампить стеки горутин). Не убивай — диагностируй.
+N секунд — логируй `Warn`-ом (логгер проекта — `*scarylog.Logger`, скилл
+`go-scarylog`; printf-стиля там нет, только msg + пары ключ-значение), а в CI можно
+дампить стеки горутин. Не убивай — диагностируй.
 
-**Replace-on-write для lock-free чтения.** `pump` читает срез подписчиков топика
-**без лока**. Значит при отписке нельзя мутировать срез на месте — заменяй
-целиком (`slices.Clone` + `Delete`). Отписки редки, копия дешевле гонки:
+**Таблица маршрутизации: replace-on-write защищает СРЕЗ, но не МАПУ.** Отписка не
+имеет права мутировать срез подписчиков на месте — его копию мог уже забрать `pump`;
+поэтому срез заменяется целиком (`slices.Clone` + `slices.Delete`). Но само по себе
+это чтение из `pump` безопасным **не делает**: `b.topics` — обычная Go-мапа, и
+`b.topics[t]` в `pump` идёт параллельно записи `b.topics[t] = ...` под `topicsMu`.
+Это гонка на мапе: `-race` её поймает, а рантайм может убить процесс через
+`concurrent map read and map write`. Мапу тоже надо синхронизировать.
+
+Вариант А, по умолчанию: **мапа под `RWMutex`, читатели тоже берут лок.** Просто и
+достаточно, если чтение таблицы — не самое горячее место.
 
 ```go
+func (b *Bus) subscribersOf(t reflect.Type) []*subscribeState {
+	b.topicsMu.RLock()
+	defer b.topicsMu.RUnlock()
+	return b.topics[t] // срез отдавать наружу безопасно: он неизменяем
+}
+
 func (b *Bus) unsubscribe(t reflect.Type, q *subscribeState) {
-    b.topicsMu.Lock(); defer b.topicsMu.Unlock()
-    i := slices.Index(b.topics[t], q)
-    if i < 0 { return }
-    b.topics[t] = slices.Delete(slices.Clone(b.topics[t]), i, i+1)
+	b.topicsMu.Lock()
+	defer b.topicsMu.Unlock()
+	i := slices.Index(b.topics[t], q)
+	if i < 0 {
+		return
+	}
+	// Старый срез мог уехать в pump — не мутируем его, заменяем целиком.
+	b.topics[t] = slices.Delete(slices.Clone(b.topics[t]), i, i+1)
 }
 ```
+
+Вариант Б, если `RLock` на каждое событие измерен как дорогой: держать всю таблицу в
+`atomic.Pointer` на неизменяемый снимок — читатель делает `Load` без лока, писатель под
+мьютексом собирает новую мапу и подменяет указатель. Копировать надо и мапу, и срез
+внутри неё (`maps.Clone` копирует мапу, но значения-срезы остаются общими со старым
+снимком).
+
+Вариант В, самый честный по духу §1: **не делить таблицу вообще** — слать
+подписку и отписку в `pump` отдельным каналом, тогда её читает и пишет одна горутина.
+Цена — отписка становится асинхронной.
 
 **Дешёвые debug-хуки.** Дебаг-путь не должен стоить ничего, когда выключен.
 Проверяй `active()` атомиком до любой работы по сборке debug-события:
 
 ```go
 if b.routeDebug.active() { // atomic.Bool под капотом — почти бесплатно
-    b.routeDebug.run(RoutedEvent{Event: val.Event, From: val.From, To: clients})
+	b.routeDebug.run(RoutedEvent{Event: val.Event, From: val.From, To: clients})
 }
 ```
 
@@ -349,65 +308,63 @@ if b.routeDebug.active() { // atomic.Bool под капотом — почти �
 **отдельном типе**, а не в публичном API клиента — чтобы соблазн «подсмотреть
 отправителя события» не протёк в продовый код.
 
-## 6. Тестирование событийного кода
+## 6. Тестовый харнесс шины
 
-Шину тестируют **по наблюдаемым событиям**, а не по внутренним полям. Паттерн
-харнесса (по образцу `eventbustest`):
+Шину тестируют **по наблюдаемым событиям**, а не по внутренним полям. Общие
+конвенции тестов — в `go-testing`; здесь только специфичное для шины.
+
+Харнесс (по образцу `eventbustest`): фабрика шины, привязанная к тесту, и watcher,
+который через `Debugger` копит все маршрутизированные события в буферный канал.
 
 ```go
 func NewBus(t testing.TB) *Bus {
-    bus := New()
-    t.Cleanup(bus.Close) // lifecycle привязан к тесту
-    return bus
+	bus := New()
+	t.Cleanup(bus.Close) // lifecycle привязан к тесту
+	return bus
 }
 
 // Watcher подписывается на «все маршрутизированные события» через Debugger
 // и копит их в буферный канал.
 func NewWatcher(t *testing.T, bus *Bus) *Watcher {
-    tw := &Watcher{mon: bus.Debugger().WatchBus(), events: make(chan any, 100)}
-    t.Cleanup(tw.done)
-    go tw.watch()
-    return tw
+	tw := &Watcher{mon: bus.Debugger().WatchBus(), events: make(chan any, 100)}
+	t.Cleanup(tw.done)
+	go tw.watch()
+	return tw
 }
 ```
 
-API проверок:
-- `Expect(tw, matchers...)` — заданные события встречаются как **подпоследовательность**
-  (можно с чужими событиями между ними).
-- `ExpectExactly(tw, matchers...)` — поток ровно из этих событий, без лишних.
-- `Type[T]()` — матчер «событие типа T, содержимое неважно»:
+Проверки — по потоку событий: `Expect(tw, matchers...)` требует события как
+**подпоследовательность** (чужие события между ними допустимы),
+`ExpectExactly(tw, matchers...)` — поток ровно из этих событий. Матчеры для разных T —
+значения разных типов (`func(EventA)` и `func(EventB)`), поэтому обе функции принимают
+`matchers ...any` и разбирают тип матчера рефлексией; `...func(any)` не соберётся.
+Матчер «событие типа T, содержимое неважно» — одна строка:
 
 ```go
 func Type[T any]() func(T) { return func(T) {} }
 ```
 
-```go
-bus := eventbustest.NewBus(t)
-tw  := eventbustest.NewWatcher(t, bus)
-somethingThatEmitsFoo()
-if err := eventbustest.Expect(tw, eventbustest.Type[EventFoo]()); err != nil {
-    t.Error(err)
-}
-```
-
-**Проверка отсутствия событий — через `testing/synctest`.** Чтобы не ждать
-реальные таймеры, оборачивай в `synctest.Test` + `synctest.Wait()`:
+**Отсутствие событий проверяется под `testing/synctest`**, иначе тест либо спит
+реальные секунды, либо флачит. API — `synctest.Test` + `synctest.Wait`;
+`synctest.Run` удалён в 1.26, писать его нельзя.
 
 ```go
 synctest.Test(t, func(t *testing.T) {
-    bus := eventbustest.NewBus(t)
-    tw  := eventbustest.NewWatcher(t, bus)
-    somethingThatShouldNotEmit()
-    synctest.Wait()
-    if err := eventbustest.ExpectExactly(tw); err != nil { // ждём пустой поток
-        t.Errorf("ожидали тишину, получили %v", err)
-    }
+	bus := eventbustest.NewBus(t)
+	tw := eventbustest.NewWatcher(t, bus)
+	somethingThatShouldNotEmit()
+	synctest.Wait() // все горутины пузыря встали — новых событий уже не будет
+	if err := eventbustest.ExpectExactly(tw); err != nil {
+		t.Errorf("ожидали тишину, получили %v", err)
+	}
 })
 ```
 
 ## 7. Чеклист реализации
 
-- [ ] Один `pump`-goroutine владеет роутингом; горячий путь — без локов.
+- [ ] Один `pump`-goroutine владеет очередью и доставкой; своё состояние он не лочит.
+      Единственная общая с чужими горутинами структура — таблица маршрутизации, её
+      синхронизация по §5.
 - [ ] Публичный API типизирован, но в мапах/интерфейсах шины лежит **non-generic
       ядро**, не `Foo[T]`. Регистрируешь `core`, не фасад.
 - [ ] `reflect.TypeFor[T]()` и `typ.String()` кэшируются один раз при создании,
@@ -415,25 +372,27 @@ synctest.Test(t, func(t *testing.T) {
 - [ ] Per-T стенсел — только вокруг типизированного `case ch <- t`; окружение из
       ядра.
 - [ ] Входная очередь bounded; `acceptCh()` отдаёт `nil` при полной (nil-channel).
+- [ ] Выход из петли доставки — помеченный `break deliver`, а не голый `break`
+      внутри `select` (иначе бесконечный цикл, §4).
 - [ ] Наборы cases в `pump` и `dispatch` синхронизированы (помечено комментарием).
 - [ ] `queue.Drop` обнуляет снятый слот (GC).
-- [ ] Отписка делает replace-on-write среза (`Clone`+`Delete`), не мутирует на месте.
+- [ ] Отписка заменяет срез целиком (`Clone`+`Delete`) **и** мапу тоже
+      синхронизирует — `RWMutex` на чтении либо `atomic.Pointer` на снимок (§5).
 - [ ] Snapshot/инспекция — через `chan chan []T`, не через локи чужого состояния.
 - [ ] Debug-путь под `active()`-атомиком: выключенный дебаг бесплатен.
 - [ ] `Close` шины каскадно закрывает клиентов/издателей/подписчиков; идемпотентно.
 - [ ] Медленный подписчик логируется (не роняет шину); backpressure — это его баг.
 
-## 8. Тестировать обязательно под race
+## 8. Что прогнать на шине
 
-Конкурентный код без race-детектора и многократного прогона недопроверен:
+Как гонять конкурентные тесты (`-race`, `-count`, детерминизм) — в `go-testing`.
+Специфичный для шины минимум сценариев:
 
-```bash
-go test -race -count=1 ./<pkg>/
-go test -count=10  ./<pkg>/   # ловит flaky-гонки
-```
-
-Минимальный набор сценариев: доставка в порядке публикации; подписчик получает
-только свой тип; медленный подписчик создаёт backpressure, но не дедлок;
-`Close` во время доставки (нет утечки горутин); отписка во время роутинга
-(replace-on-write); snapshot под нагрузкой; проверка отсутствия событий через
-`synctest`.
+- доставка в порядке публикации;
+- подписчик получает только свой тип;
+- медленный подписчик создаёт backpressure, но не дедлок;
+- `Close` во время доставки — без утечки горутин;
+- отписка во время роутинга — ловит именно гонку на таблице маршрутизации (§5),
+  поэтому обязательно под `-race`;
+- snapshot под нагрузкой;
+- отсутствие событий — под `synctest.Test` (§6).
