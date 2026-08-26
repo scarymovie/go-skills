@@ -1,69 +1,109 @@
 ---
 name: go-code-style
-description:
-    Use this skill when writing, reviewing, or refactoring Go code. Covers idiomatic Go patterns, error handling, goroutines, struct initialization, and style conventions. Triggers on: "code review", "go style", "refactor", "idiomatic go", "code conventions", "напиши го код", "код ревью".
+description: >
+  Стиль Go-кода проекта: обработка и обёртывание ошибок, единое правило про panic,
+  горутины и каналы, современные идиомы актуального тулчейна. Отклонения от Uber Go
+  Style Guide вынесены отдельно. Go code style: errors, panic policy, goroutines,
+  modern idioms.
+when_to_use: >
+  Пишешь, ревьюишь или рефакторишь Go-код; сомневаешься, вернуть ошибку или паниковать;
+  выбираешь идиому. Триггеры: "code review", "go style", "refactor", "idiomatic go",
+  "code conventions", "напиши го код", "код ревью", "обёртывание ошибок", "panic или
+  error", "wrap error", "стиль кода".
 ---
 
-# Go Code Style
+# Стиль Go-кода
 
-This skill defines code style conventions for Go projects. Full reference with examples is in `references/style-guide.md` — read it when you need examples or deeper context on a specific rule.
+Go 1.27 (минимум 1.26).
 
-## Quick Reference
+Общие правила — это Uber Go Style Guide, и модель их знает. Здесь только то, что мы
+решаем иначе или что Uber не покрывает. Отклонения с разбором — в
+[`references/style-guide.md`](references/style-guide.md), читай, когда нужен пример
+или обоснование.
 
-### Interfaces
-- Never use pointer to interface — pass interfaces as values
-- Verify interface compliance at compile time: `var _ http.Handler = (*Handler)(nil)`
+## Ошибки
 
-### Globals and Init
-- No mutable globals — use dependency injection
-- Avoid `init()` — use explicit constructors instead
-- No goroutines in `init()`
+- `errors.New` для статического текста, `fmt.Errorf` для динамического.
+- `%w` — когда вызывающий должен уметь сматчить ошибку через `errors.Is`/`errors.As`;
+  `%v` — когда тип ошибки намеренно прячется и не является частью контракта.
+- **Никаких «failed to», «error while», «unable to»** в тексте. Сообщение — это имя
+  операции: `"new store: %w"`, не `"failed to create new store: %w"`. На цепочке из
+  четырёх уровней разница между читаемым путём и шумом.
+- Именование: экспортируемые — `ErrNotFound`, приватные — `errNotFound`, типы —
+  `NotFoundError`.
+- **Обработай ошибку один раз.** Либо обернул и вернул, либо залогировал и
+  деградировал — но не то и другое сразу. Третья ветка (лог без `return`) допустима
+  только когда сценарий остаётся корректным без этой операции.
 
-### Panics
-- No `panic` in production code — return errors instead
-- Exception: program startup for truly unrecoverable states
+## panic — единое правило
 
-### Errors
-- Use `errors.New` for static messages, `fmt.Errorf` for dynamic
-- Use `%w` to wrap errors (allows `errors.Is` / `errors.As`), `%v` to hide underlying error
-- Keep error messages concise: `"new store: %w"` not `"failed to create new store: %w"`
-- Exported error vars: `ErrNotFound`; unexported: `errNotFound`; custom types: `NotFoundError`
-- Handle each error once — don't log and return at the same time
+Этот скилл — владелец правила. Другие скиллы на него ссылаются и не переопределяют.
 
-### Goroutines and Channels
-- Every goroutine must have a way to stop and a way to wait for it to exit
-- Channel size: unbuffered or 1 — any other size needs justification
-- Use `sync.WaitGroup` for multiple goroutines, `chan struct{}` for one
+**Конструктор с валидацией возвращает `(*T, error)`.** Не паникует.
 
-### Time
-- Always use `time.Time` and `time.Duration`, never raw `int`
-- If forced to use int (e.g. JSON), include unit in field name: `IntervalMillis`
+`panic` допустим ровно в трёх местах:
 
-### Performance
-- Specify capacity for slices and maps when size is known: `make([]T, 0, size)`
-- Convert `[]byte("string")` once outside loops, not on every iteration
+1. **`Must*`-обёртка над литералами** — значение известно на этапе компиляции, ошибка
+   означает опечатку в исходнике: `regexp.MustCompile`, `MustNewUser(1, "root")`.
+2. **Тестовые фикстуры** — в тестах предпочтительнее `t.Fatal`, но `Must*` в билдере
+   фикстур приемлем.
+3. **Старт приложения до приёма трафика** — невалидный конфиг, недоступная миграция.
+   Хотя и здесь лучше залогировать и `os.Exit(1)`: паника печатает стек, который
+   ничего не объясняет оператору.
 
-### Enums
-- Start int enums at 1 with `iota + 1` to avoid collision with zero value
-- Exception: when zero value is a meaningful default
+`panic` **никогда** — на значении, пришедшем из запроса, конфига или БД. Это внешние
+данные, и их невалидность — штатный сценарий, а не программерская ошибка.
 
-### Style
-- Soft line length limit: 99 characters
-- Group similar declarations with `()` — const, var, type, import
-- Import groups: 3 groups separated by blank lines — stdlib / external / internal
-- Package names: lowercase, no underscores, singular, no "util/common/shared"
-- Don't shadow built-in names: `error`, `string`, `len`, etc.
-- Sort functions in rough call order, group by receiver, exported first
+Горутина, которая может паниковать, обязана иметь свой `recover`: паника в горутине
+не ловится `recover` в вызывающей и роняет процесс целиком.
 
-### Nesting and Control Flow
-- Use early return for errors and edge cases — reduce nesting
-- Remove unnecessary `else` when `if` block has a `return`
+## Горутины и каналы
 
-### Structs and Variables
-- Always use field names when initializing structs: `User{Name: "John"}` not `User{"John"}`
-- Omit zero value fields unless they add meaningful context
-- Use `var user User` for zero value structs instead of `user := User{}`
-- Use `&T{Name: "foo"}` instead of `new(T)` for struct references
-- Use `make(map[K]V)` for empty maps; map literal for fixed elements
-- `nil` is a valid slice — return `nil` not `[]T{}`, check with `len(s) == 0`
-- Declare variables close to their use, reduce scope where possible
+- У каждой горутины есть способ её остановить и способ дождаться её выхода. Запуск
+  без обоих — утечка.
+- Размер канала: небуферизованный или 1. Больше — только с обоснованием прямо в коде.
+  Пример законного обоснования — `telephony-realtime-audio`, где буфер держит секунду
+  аудио, потому что альтернатива — потеря пакетов в ядре.
+- `wg.Go(func(){ ... })` (Go 1.25) вместо `wg.Add(1)` + `go` + `defer wg.Done()`.
+  Когда горутины возвращают ошибку — `errgroup.Group`.
+- Отправка в канал внутри `select` должна селектиться и с `ctx.Done()`, иначе отмена
+  не разблокирует отправителя.
+
+## Современные идиомы
+
+Тулчейн переписывает большую часть этого сам: `go fix -diff ./...` покажет, что именно
+(см. `go-quality`).
+
+| Идиома | С версии | Вместо |
+|---|---|---|
+| `wg.Go(func(){...})` | 1.25 | `wg.Add(1)` + `defer wg.Done()` |
+| `for b.Loop()` | 1.24 | `for i := 0; i < b.N; i++`; `b.ResetTimer()` больше не нужен |
+| `for range N` | 1.22 | счётный цикл с неиспользуемым `i` |
+| `t.Context()` | 1.24 | `context.WithCancel(context.Background())` + `defer cancel()` в тесте |
+| `omitzero` | 1.24 | `omitempty` для структур и времени |
+| `new(expr)` | 1.26 | временная переменная ради взятия адреса |
+| `slog.DiscardHandler` | 1.24 | самописный no-op хендлер |
+| `slog.NewMultiHandler` | 1.26 | сторонний fan-out вроде `slog-multi` |
+| `synctest.Test` | 1.25 | ожидание реальных таймеров в тестах |
+
+**Правило `w := w` в цикле — убрать отовсюду.** С Go 1.22 переменная цикла создаётся
+на каждой итерации, и копия не нужна. Если код всё ещё её делает, это либо реликт, либо
+`go.mod` объявляет версию языка ниже 1.22 — второе стоит проверить, потому что тогда
+старая семантика действительно в силе.
+
+## Оформление
+
+- Три группы импортов: стандартная библиотека / внешние / свои. Это отклонение от Uber,
+  разбор — в reference.
+- Мягкий предел длины строки — 99 символов.
+- Пакеты: строчные, без подчёркиваний, в единственном числе. Никаких `util`, `common`,
+  `shared` — такое имя означает, что содержимое не продумано.
+- Не затенять встроенные имена: `error`, `string`, `len`, `new`, `max`.
+- Размер файла и правило «одна реализация интерфейса — один файл» — в
+  `go-file-size-limit`.
+
+## Проектирование типов
+
+- Структуры, конструкторы, геттеры и иммутабельность — в `go-struct`.
+- Раскладка пакетов и где объявлять интерфейсы — в `go-project-structure`.
+- Логирование — в `go-scarylog`: в проекте `*scarylog.Logger`, не голый `*slog.Logger`.
