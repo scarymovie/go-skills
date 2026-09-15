@@ -49,7 +49,7 @@ cp -r go-skills/.claude/skills/{go-code-style,go-testing,pgx-txmanager} <про�
 | `go-quality` | fmt, модернизаторы go fix, vet, golangci-lint, govulncheck, флаги релизной сборки |
 | `go-testing` | Выбор вида теста, изоляция на реальном Postgres, детерминизм, конкурентность |
 | `go-profiling` | pprof и его защита, flight recorder, бенчмарки, PGO, поиск утечек |
-| `go-scarylog` | Логгер проекта вместо голого slog. **Зеркало upstream — править в репозитории библиотеки** |
+| `go-scarylog` | Логгер проекта вместо голого slog: правило и установка. **Описание API — в репозитории библиотеки** |
 | `pgx-txmanager` | pgxpool, устойчивый старт, транзакции и propagation, классификация ошибок, CopyFrom |
 | `postgres-migrations` | Свой мигратор и парные `*.up.sql`/`*.down.sql`, типы колонок, constraint'ы, и блокировки, из-за которых миграция роняет прод |
 | `go-events` | Контракт доменного события, порядок продюсера, dual-write и outbox |
