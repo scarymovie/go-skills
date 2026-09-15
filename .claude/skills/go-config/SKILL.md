@@ -33,12 +33,16 @@ when_to_use: >
 ## Структура проекта
 
 ```
-app/
+project/
 ├── config/
 │   └── config.go              # Структуры, Validate и функция Load
+├── go.mod
 ├── config.example.yaml        # Шаблон конфига с плейсхолдерами (коммитится в git)
 └── config.yaml                # Локальный конфиг для разработки (в .gitignore)
 ```
+
+Оба yaml лежат в корне модуля, рядом с `go.mod`: путь в `config.Load("config.yaml")`
+относительный, а рабочий каталог процесса при `go run ./cmd/app` — именно корень модуля.
 
 - `config.yaml` — рабочий конфиг, содержит реальные значения, **не коммитится** (добавить в `.gitignore`)
 - `config.example.yaml` — шаблон с плейсхолдерами вместо секретов, **коммитится в git**
@@ -50,6 +54,8 @@ app/
 volumes:
   - /var/project/config.yaml:/app/config.yaml:ro
 ```
+
+`/app` справа — `WORKDIR` внутри образа (скилл `docker-go`), а не каталог репозитория.
 
 ---
 

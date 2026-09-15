@@ -20,7 +20,7 @@ when_to_use: >
 
 # Кодогенерация из OpenAPI через oapi-codegen
 
-Go 1.27 (минимум 1.26); oapi-codegen v2.8.0 требует Go 1.25+.
+Go 1.27, ниже не поддерживается (политика версий — скилл `go-quality`); oapi-codegen v2.8.0 требует Go 1.25+.
 
 Имена в примерах (`bonds`, `ListBonds`, `NwkBond`) — из демо-домена облигаций, подставляй
 свои. Что не пример, а правило: пакет сгенерированного кода зовётся `api` и лежит в
@@ -48,8 +48,9 @@ generate:
 ```
 
 Путь в `output` считается от рабочего каталога вызова, а `go tool` резолвит пиннутую версию
-по `go.mod` и потому запускается изнутри модуля (у нас это `app/`). Отсюда путь в примере без
-префикса `app/`: сместил каталог вызова — сместились все относительные пути.
+по `go.mod` и потому запускается изнутри модуля. Модуль у нас в корне репозитория (скилл
+`go-project-structure`), поэтому вызов идёт оттуда же и путь пишется от корня: сместил каталог
+вызова — сместились все относительные пути.
 
 `generate` — **объект булевых полей**, не список строк. Список тоже проходит, но по другой
 ветке: это устаревший «старый» стиль конфига со своим набором ключей (`templates`,
@@ -130,10 +131,12 @@ type StrictServerInterface interface {
 ## Установка: tool-директива go.mod, не Docker
 
 ```bash
-cd app
 go get -tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0
-go tool oapi-codegen -config ../docker/images/codegen/oapi-config/bonds.yaml ../api/bonds.yaml
+go tool oapi-codegen -config docker/images/codegen/oapi-config/bonds.yaml api/bonds.yaml
 ```
+
+Обе команды — из корня репозитория, он же корень модуля. Если модуль живёт в подкаталоге,
+каждая идёт через `go -C <dir>`, а пути в аргументах разворачиваются на `../`.
 
 `go get -tool` добавляет в `go.mod` строку `tool github.com/...` и пиннит версию в `go.mod`
 и `go.sum`. Значит версия генератора воспроизводима у всех и в CI, а `.gen.go` перестаёт
@@ -151,7 +154,7 @@ generate-server:
 		cfg=$(CFG_DIR)/$$name.yaml; \
 		[ -f "$$cfg" ] || { echo "нет конфига $$cfg"; exit 1; }; \
 		echo ">>> $$name"; \
-		(cd app && go tool oapi-codegen -config ../$$cfg ../$$spec); \
+		go tool oapi-codegen -config $$cfg $$spec; \
 	done
 ```
 
@@ -196,7 +199,7 @@ ENTRYPOINT ["oapi-codegen"]
 Каталоги — по `go-project-structure`; для одного HTTP-модуля это три пакета:
 
 ```
-app/internal/infrastructure/http/bonds/
+internal/infrastructure/http/bonds/
 ├── api/       # bonds.gen.go, пакет api — только генерация, руками не трогать
 ├── handler/   # реализация StrictServerInterface
 └── mapper/    # Nwk*/*Params <-> domain
