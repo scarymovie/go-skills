@@ -406,7 +406,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U db_user -d db_database"]
       interval: 10s
@@ -422,6 +422,14 @@ volumes:
 ```
 
 Только инфраструктурные зависимости. Приложение запускается локально через `go run`.
+
+Том монтируется на `/var/lib/postgresql`, а не на `/var/lib/postgresql/data`. С 18-й версии
+официальный образ держит `PGDATA=/var/lib/postgresql/18/docker` (каталог с мажором в имени,
+как у `pg_ctlcluster`), и `VOLUME` объявлен на `/var/lib/postgresql`. Старый путь из примеров
+для 17-й и ниже ломает запуск: entrypoint видит отдельный маунт на `.../data`, пишет
+`there appears to be PostgreSQL data in: /var/lib/postgresql/data (unused mount/volume)` и
+завершается с кодом 1 — даже если том пустой. Проверено на `postgres:18-alpine3.24`
+(18.6), изменение — docker-library/postgres#1259.
 
 Мажорную версию Postgres менять нельзя на живом томе: 18-й сервер не поднимется на каталоге
 данных 17-го. Для dev проще удалить том (`docker compose down -v`) и накатить миграции заново.
